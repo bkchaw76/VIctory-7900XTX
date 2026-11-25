@@ -1,0 +1,97 @@
+name: Windows x64 Builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-x64-build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "apps/**"
+      - "crates/**"
+      - "scripts/play.ps1"
+      - "victory.example.toml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Windows x64 (${{ matrix.profile }})
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: diag
+            features: diagnostics
+          - profile: release
+            features: ""
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x64-${{ matrix.profile }}
+
+      - name: Build victory.exe
+        shell: pwsh
+        run: |
+          $args = @("build", "--locked", "--profile", "${{ matrix.profile }}", "-p", "victory", "--target", "x86_64-pc-windows-msvc")
+          if ("${{ matrix.features }}") { $args += @("--features", "${{ matrix.features }}") }
+          & cargo @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package executable and launcher
+        shell: pwsh
+        run: |
+          $profile = "${{ matrix.profile }}"
+          $source = "target/x86_64-pc-windows-msvc/$profile/victory.exe"
+          if (!(Test-Path $source)) { throw "Expected executable missing: $source" }
+          $dest = "dist/VIctory-7900XTX-Windows-x64-$profile"
+          New-Item -ItemType Directory -Force -Path "$dest/target/$profile", "$dest/scripts" | Out-Null
+          Copy-Item $source "$dest/target/$profile/victory.exe"
+          Copy-Item scripts/play.ps1 "$dest/scripts/play.ps1"
+          Copy-Item victory.example.toml "$dest/victory.example.toml"
+          @'
+          VIctory-7900XTX Windows x64
+          
+          1. Extract this artifact to a local folder.
+          2. Place your legally obtained game files outside this folder.
+          3. (Optional) Copy victory.example.toml to victory.toml and edit your local paths.
+          4. From the extracted folder, start PowerShell:
+             .\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build PROFILE
+          
+          The script invokes target\PROFILE\victory.exe with the fork's default settings.
+          Requires Windows x64, AVX2 CPU and compatible Direct3D 12 hardware.
+          No game files, firmware, keys, or personal configuration are included.
+          '@.Replace("PROFILE", $profile) | Set-Content -Encoding utf8 "$dest/README-BUILD.txt"
+          Get-ChildItem $dest -Recurse -File | Select-Object FullName,Length
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VIctory-7900XTX-Windows-x64-${{ matrix.profile }}
+          path: dist/VIctory-7900XTX-Windows-x64-${{ matrix.profile }}/
+          if-no-files-found: error
+          retention-days: 30
